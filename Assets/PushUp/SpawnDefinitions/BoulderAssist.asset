@@ -1,0 +1,20 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8436d9673bb44c579bf70203acaa1a47, type: 3}
+  m_Name: BoulderAssist
+  m_EditorClassIdentifier: PushUp.Runtime::PushUp.Gameplay.SpawnDefinition
+  _id: assist
+  _displayName: Boulder Assist
+  _prefab: {fileID: 2090669282770623516, guid: 18f6382802f9efb43821be2e6839b1a8, type: 3}
+  _offlineOverride: {fileID: 4517225558775201985, guid: 647e190234ac75447b1246be508e8aaa, type: 3}
+  _role: 3
+  _policy: 1

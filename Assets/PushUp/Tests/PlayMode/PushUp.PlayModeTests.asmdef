@@ -1,0 +1,7 @@
+{
+  "name": "PushUp.PlayModeTests",
+  "rootNamespace": "PushUp.Tests",
+  "references": ["PushUp.Runtime", "FishNet.Runtime"],
+  "includePlatforms": [],
+  "optionalUnityReferences": ["TestAssemblies"]
+}

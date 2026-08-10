@@ -1,0 +1,20 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8436d9673bb44c579bf70203acaa1a47, type: 3}
+  m_Name: Boulder
+  m_EditorClassIdentifier: PushUp.Runtime::PushUp.Gameplay.SpawnDefinition
+  _id: boulder
+  _displayName: Boulder
+  _prefab: {fileID: 8982802104965608429, guid: 1f21ff1715ded7445906e9a4dd6892c8, type: 3}
+  _offlineOverride: {fileID: 8309502054146085515, guid: 1ef6eae88a496bb4a8bc628debe38c30, type: 3}
+  _role: 1
+  _policy: 1

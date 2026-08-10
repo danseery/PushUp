@@ -1,0 +1,10 @@
+{
+  "dependencies": {
+    "com.firstgeargames.fishnet": "file:com.firstgeargames.fishnet",
+    "com.rlabrecque.steamworks.net": "https://github.com/rlabrecque/Steamworks.NET.git?path=com.rlabrecque.steamworks.net#2025.164.1",
+    "com.unity.inputsystem": "1.20.0",
+    "com.unity.render-pipelines.universal": "17.5.0",
+    "com.unity.test-framework": "1.7.0",
+    "com.unity.ugui": "2.5.0"
+  }
+}

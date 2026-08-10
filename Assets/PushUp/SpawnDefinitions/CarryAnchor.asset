@@ -1,0 +1,20 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8436d9673bb44c579bf70203acaa1a47, type: 3}
+  m_Name: CarryAnchor
+  m_EditorClassIdentifier: PushUp.Runtime::PushUp.Gameplay.SpawnDefinition
+  _id: anchor
+  _displayName: Anchor
+  _prefab: {fileID: 601993341567180611, guid: c895596ebad229c4fb78ce8e4c1ed26e, type: 3}
+  _offlineOverride: {fileID: 3590791417027122170, guid: abc21b973bc22a34b9832c6f16b34716, type: 3}
+  _role: 3
+  _policy: 1

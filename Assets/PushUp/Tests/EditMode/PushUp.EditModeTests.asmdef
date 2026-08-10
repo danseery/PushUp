@@ -1,0 +1,7 @@
+{
+  "name": "PushUp.EditModeTests",
+  "rootNamespace": "PushUp.Tests",
+  "references": ["PushUp.Runtime", "PushUp.UI", "FishNet.Runtime", "com.rlabrecque.steamworks.net", "Unity.InputSystem", "UnityEngine.UI"],
+  "includePlatforms": ["Editor"],
+  "optionalUnityReferences": ["TestAssemblies"]
+}
