@@ -206,7 +206,7 @@ namespace PushUp.Editor
             Set(networkTransform, "_sendToOwner", false);
             Set(networkTransform, "_componentConfiguration", NetworkTransform.ComponentConfigurationType.Rigidbody);
             Set(networkTransform, "_interval", 1);
-            Set(networkTransform, "_interpolation", 1);
+            Set(networkTransform, "_interpolation", 0);
             Set(networkTransform, "_synchronizeScale", false);
             worldRoot.localScale = new Vector3(1f, 1.85f, 1f);
             Transform torso = CreateLimb(worldRoot, "Torso", PrimitiveType.Cube, new Vector3(0f, 0.15f, 0f), new Vector3(0.7f, 0.9f, 0.42f), material);
@@ -312,7 +312,9 @@ namespace PushUp.Editor
             Set(networkTransform, "_clientAuthoritative", false);
             Set(networkTransform, "_componentConfiguration", NetworkTransform.ComponentConfigurationType.Rigidbody);
             Set(networkTransform, "_interval", 3);
+            Set(networkTransform, "_interpolation", 0);
             Set(networkTransform, "_synchronizeScale", false);
+            dummy.AddComponent<RemoteActorPresentation>();
             GameplayLayers.ApplyRole(dummy, SpawnRole.Actor);
             return SavePrefab(dummy, Prefabs + "/TrainingDummy.prefab").GetComponent<NetworkObject>();
         }
@@ -343,7 +345,9 @@ namespace PushUp.Editor
             Set(networkTransform, "_clientAuthoritative", false);
             Set(networkTransform, "_componentConfiguration", NetworkTransform.ComponentConfigurationType.Rigidbody);
             Set(networkTransform, "_interval", 3);
+            Set(networkTransform, "_interpolation", 0);
             Set(networkTransform, "_synchronizeScale", false);
+            attackDummy.AddComponent<RemoteActorPresentation>();
             attackDummy.AddComponent<AttackDummy>();
             attackDummy.AddComponent<AttackDummyNetworkRelay>();
             GameplayLayers.ApplyRole(attackDummy, SpawnRole.Actor);
@@ -354,6 +358,12 @@ namespace PushUp.Editor
             PhysicsMaterial physicsMaterial)
         {
             GameObject existingBoulder = AssetDatabase.LoadAssetAtPath<GameObject>(Prefabs + "/Boulder.prefab");
+            Renderer existingPresentation = existingBoulder != null
+                ? existingBoulder.GetComponentInChildren<Renderer>(true)
+                : null;
+            Material presentationMaterial = existingPresentation != null && existingPresentation.sharedMaterial != null
+                ? existingPresentation.sharedMaterial
+                : material;
             BoulderController existingController = existingBoulder != null
                 ? existingBoulder.GetComponent<BoulderController>()
                 : null;
@@ -368,9 +378,10 @@ namespace PushUp.Editor
             NetworkObject network = boulder.AddComponent<NetworkObject>();
             BoulderController controller = boulder.AddComponent<BoulderController>();
             BoulderNetworkState networkState = boulder.AddComponent<BoulderNetworkState>();
+            boulder.AddComponent<BoulderVisualPredictor>();
             boulder.AddComponent<NetworkRunState>();
             Transform presentation = CreateLimb(boulder.transform, "Presentation", PrimitiveType.Sphere,
-                Vector3.zero, Vector3.one, material);
+                Vector3.zero, Vector3.one, presentationMaterial);
             Collider presentationCollider = presentation.GetComponent<Collider>();
             if (presentationCollider != null)
                 Object.DestroyImmediate(presentationCollider);

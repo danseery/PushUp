@@ -164,6 +164,7 @@ GameObject:
   - component: {fileID: 6337563876550733908}
   - component: {fileID: 5911087239022882767}
   - component: {fileID: 5344223683092240202}
+  - component: {fileID: 9134661272213001846}
   m_Layer: 0
   m_Name: AttackDummy
   m_TagString: Untagged
@@ -304,7 +305,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: e11479e3a0f04cbbb3d860b181586499, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: PushUp.Runtime::PushUp.Gameplay.TrainingDummy
   _standingSpring: 32
   _getUpSpring: 42
@@ -391,7 +392,7 @@ MonoBehaviour:
     Rotation: 1
     Scale: 0
   _useScaledTime: 1
-  _interpolation: 2
+  _interpolation: 0
   _extrapolation: 2
   _enableTeleport: 0
   _teleportThreshold: 1
@@ -415,6 +416,20 @@ MonoBehaviour:
     X: 0
     Y: 0
     Z: 0
+--- !u!114 &9134661272213001846
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5349633684185324664}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 46de7f0dfa8e45f8ad6d768fd82b4631, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: PushUp.Runtime::PushUp.Gameplay.RemoteActorPresentation
+  _networkTransform: {fileID: 6337563876550733908}
+  _worldRoot: {fileID: 8985680968750950069}
 --- !u!114 &5911087239022882767
 MonoBehaviour:
   m_ObjectHideFlags: 0

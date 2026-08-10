@@ -251,6 +251,9 @@ namespace PushUp.Gameplay
         private bool _grounded;
         private bool _crouched;
         private bool _sliding;
+        private int _slideSprintGraceTicks;
+        private int _slideLevelTicks;
+        private bool _slideWasDownhill;
         private bool _crouchBoostAvailable;
         private int _crouchBoostTicks;
         private float _standingCapsuleHeight;
@@ -280,6 +283,7 @@ namespace PushUp.Gameplay
         private uint _poseSnapshotSequence;
         private PlayerActorState _lastActorStateSent = (PlayerActorState)byte.MaxValue;
         private RemotePlayerPresentation _remotePresentation;
+        private BoulderNetworkState _localPredictedBoulder;
 
         private NetworkObject _serverGrabTarget;
         private NetworkObject _serverBoulderPushTarget;
@@ -569,7 +573,9 @@ namespace PushUp.Gameplay
             {
                 MoveInput input = BuildInput();
                 ApplyLocalMotor(input, deltaTime, IsServerStarted);
-                SendMovementIntentIfDue(input);
+                PlayerSharedWorldIntent sharedWorldIntent = BuildSharedWorldIntent(input);
+                UpdateLocalBoulderVisualPrediction(sharedWorldIntent, input);
+                SendMovementIntentIfDue(sharedWorldIntent);
                 SendActorStateIfChanged(_actorPhysics != null
                     ? _actorPhysics.ActorState
                     : PlayerActorState.Locomotion);
@@ -812,13 +818,12 @@ namespace PushUp.Gameplay
             }
         }
 
-        private void SendMovementIntentIfDue(MoveInput input)
+        private void SendMovementIntentIfDue(PlayerSharedWorldIntent intent)
         {
             if (!IsClientStarted || IsServerStarted || !IsOwner || TimeManager == null)
                 return;
 
             uint tick = TimeManager.LocalTick;
-            PlayerSharedWorldIntent intent = BuildSharedWorldIntent(input);
             bool changed = intent.Mode != _lastSentIntentMode || intent.BoulderTarget != _lastSentIntentTarget ||
                            intent.StanceGeneration != _lastSentStanceGeneration;
             if (!changed && unchecked(tick - _lastMovementIntentSentTick) < MovementIntentIntervalTicks)
@@ -828,6 +833,64 @@ namespace PushUp.Gameplay
             _lastSentIntentTarget = intent.BoulderTarget;
             _lastSentStanceGeneration = intent.StanceGeneration;
             SubmitMovementIntentServerRpc(intent, changed ? Channel.Reliable : Channel.Unreliable);
+        }
+
+        private void UpdateLocalBoulderVisualPrediction(PlayerSharedWorldIntent intent, MoveInput input)
+        {
+            if (!IsClientStarted || IsServerStarted || !IsOwner)
+            {
+                _localPredictedBoulder?.CancelLocalVisualPrediction();
+                _localPredictedBoulder = null;
+                return;
+            }
+
+            BoulderNetworkState state = intent.BoulderTarget != null
+                ? intent.BoulderTarget.GetComponent<BoulderNetworkState>()
+                : null;
+            if (_localPredictedBoulder != null && _localPredictedBoulder != state)
+                _localPredictedBoulder.CancelLocalVisualPrediction();
+            _localPredictedBoulder = state;
+            if (state == null || intent.Mode == BoulderIntentMode.None)
+            {
+                state?.CancelLocalVisualPrediction();
+                return;
+            }
+
+            Rigidbody boulderBody = intent.BoulderTarget.GetComponent<Rigidbody>();
+            BoulderController boulder = boulderBody != null
+                ? boulderBody.GetComponentInParent<BoulderController>()
+                : null;
+            Collider boulderCollider = boulderBody != null ? boulderBody.GetComponent<Collider>() : null;
+            if (boulderBody == null || boulder == null || boulderCollider == null)
+            {
+                state.CancelLocalVisualPrediction();
+                return;
+            }
+
+            Vector3 force;
+            Vector3 torque = Vector3.zero;
+            if (intent.Mode == BoulderIntentMode.Stance &&
+                PlayerPhysics.TryGetBoulderStanceGeometry(_capsule, transform, boulderBody, _groundNormal,
+                    out BoulderPushStanceGeometry stanceGeometry))
+            {
+                force = PlayerPhysics.CalculateBoulderHoldForce(stanceGeometry, input.Move, input.Sprint);
+                torque = PlayerPhysics.CalculateBoulderHoldTorque(stanceGeometry, input.Move);
+            }
+            else
+            {
+                Vector3 center = _body.position + Vector3.up * _capsule.center.y;
+                Vector3 surface = boulderCollider.ClosestPoint(center);
+                Vector3 inward = Vector3.ProjectOnPlane(boulderBody.worldCenterOfMass - surface,
+                    _groundNormal).normalized;
+                Vector3 desired = PlayerPhysics.DesiredDirection(_motorYaw, input.Move);
+                if (inward.sqrMagnitude < 0.001f || Vector3.Dot(desired, inward) < 0.35f)
+                {
+                    state.CancelLocalVisualPrediction();
+                    return;
+                }
+                force = inward * (input.Sprint ? 525f : 325f);
+            }
+            state.SetLocalVisualForce(force, torque);
         }
 
         private PlayerSharedWorldIntent BuildSharedWorldIntent(MoveInput input)
@@ -1286,6 +1349,9 @@ namespace PushUp.Gameplay
             CrouchBoostAvailable = _crouchBoostAvailable,
             Crouched = _crouched,
             Sliding = _sliding,
+            SlideSprintGraceTicks = _slideSprintGraceTicks,
+            SlideLevelTicks = _slideLevelTicks,
+            SlideWasDownhill = _slideWasDownhill,
             Grounded = _grounded,
             GroundedOnBoulder = _groundedOnBoulder,
             BoulderLandingArmed = _boulderLandingArmed,
@@ -1302,6 +1368,9 @@ namespace PushUp.Gameplay
             _crouchBoostAvailable = state.CrouchBoostAvailable;
             _crouched = state.Crouched;
             _sliding = state.Sliding;
+            _slideSprintGraceTicks = state.SlideSprintGraceTicks;
+            _slideLevelTicks = state.SlideLevelTicks;
+            _slideWasDownhill = state.SlideWasDownhill;
             _grounded = state.Grounded;
             _groundedOnBoulder = state.GroundedOnBoulder;
             _boulderLandingArmed = state.BoulderLandingArmed;
@@ -1764,6 +1833,21 @@ namespace PushUp.Gameplay
             NetworkObject target = result.Target;
             if (target == null)
                 return;
+            if (IsLocallyControlled && comboFinisher)
+            {
+                BoulderNetworkState predictedBoulder = target.GetComponent<BoulderNetworkState>();
+                if (predictedBoulder != null && result.Impulse.sqrMagnitude > 0.0001f)
+                {
+                    Vector3 bonus = result.Impulse.normalized *
+                                    (PlayerInteraction.PunchImpulse *
+                                     (PlayerInteraction.PunchComboFinisherMultiplier - 1f));
+                    Rigidbody targetBodyForPrediction = target.GetComponent<Rigidbody>();
+                    Vector3 predictedPoint = targetBodyForPrediction != null
+                        ? targetBodyForPrediction.transform.TransformPoint(result.LocalHitPoint)
+                        : target.transform.position;
+                    predictedBoulder.AddLocalVisualImpulse(bonus, predictedPoint);
+                }
+            }
             if (target.GetComponent<IOwnerPlayerImpactReceiver>() == null)
                 target.GetComponent<PlayerInteraction>()?.ReactFromHit(result.Impulse);
             Transform impactParent = target.GetComponent<BoulderController>()?.PresentationRoot ?? target.transform;
@@ -2026,6 +2110,9 @@ namespace PushUp.Gameplay
         private bool _grounded;
         private bool _crouched;
         private bool _sliding;
+        private int _slideSprintGraceTicks;
+        private int _slideLevelTicks;
+        private bool _slideWasDownhill;
         private bool _crouchBoostAvailable;
         private int _crouchBoostTicks;
         private float _standingCapsuleHeight;
@@ -2170,6 +2257,9 @@ namespace PushUp.Gameplay
                 CrouchBoostAvailable = _crouchBoostAvailable,
                 Crouched = _crouched,
                 Sliding = _sliding,
+                SlideSprintGraceTicks = _slideSprintGraceTicks,
+                SlideLevelTicks = _slideLevelTicks,
+                SlideWasDownhill = _slideWasDownhill,
                 Grounded = _grounded,
                 GroundedOnBoulder = _groundedOnBoulder,
                 BoulderLandingArmed = _boulderLandingArmed,
@@ -2200,6 +2290,9 @@ namespace PushUp.Gameplay
             _crouchBoostAvailable = state.CrouchBoostAvailable;
             _crouched = state.Crouched;
             _sliding = state.Sliding;
+            _slideSprintGraceTicks = state.SlideSprintGraceTicks;
+            _slideLevelTicks = state.SlideLevelTicks;
+            _slideWasDownhill = state.SlideWasDownhill;
             _grounded = state.Grounded;
             _groundedOnBoulder = state.GroundedOnBoulder;
             _boulderLandingArmed = state.BoulderLandingArmed;

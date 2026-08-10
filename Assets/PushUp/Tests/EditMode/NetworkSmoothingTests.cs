@@ -72,15 +72,64 @@ namespace PushUp.Tests
             RemotePresentationClock clock = new();
             // A server-only host may already be at tick 20,000 when a client whose stream starts
             // at tick 10 joins. The presentation clock must begin near 10, not near 20,000.
-            Assert.That(clock.Advance(10u, 1f / 60f, 1f / 60f), Is.EqualTo(6d).Within(0.0001d));
-            Assert.That(clock.Advance(11u, 1f / 60f, 1f / 60f), Is.EqualTo(7d).Within(0.0001d));
-            Assert.That(clock.Advance(12u, 1f / 60f, 1f / 60f), Is.EqualTo(8d).Within(0.0001d));
+            Assert.That(clock.Advance(10u, 1f / 60f, 1f / 60f), Is.EqualTo(5d).Within(0.0001d));
+            Assert.That(clock.Advance(11u, 1f / 60f, 1f / 60f), Is.EqualTo(6d).Within(0.0001d));
+            Assert.That(clock.Advance(12u, 1f / 60f, 1f / 60f), Is.EqualTo(7d).Within(0.0001d));
 
             RemotePresentationBuffer buffer = new();
             Assert.That(buffer.Add(new RemotePoseSample(10u, Vector3.zero, Quaternion.identity)), Is.True);
             Assert.That(buffer.TrySample(clock.Tick, 1f / 60f, out _, out _, out _), Is.True);
             Assert.That(buffer.Add(new RemotePoseSample(12u, Vector3.right, Quaternion.identity)), Is.True,
                 "a valid client sample must not be rejected because the host has an older, larger LocalTick");
+        }
+
+        [Test]
+        public void PresentationClockAdaptsDelayAndPlaybackSpeedWithoutSnapping()
+        {
+            NetworkPresentationClock clock = new(5u);
+            const float tickDelta = 1f / 60f;
+            clock.ObserveSample(100u, 1d, tickDelta);
+            Assert.That(clock.Advance(100u, tickDelta, tickDelta), Is.EqualTo(95d).Within(0.001d));
+
+            clock.ObserveSample(101u, 1d + tickDelta, tickDelta);
+            double stable = clock.Advance(101u, tickDelta, tickDelta);
+            Assert.That(stable, Is.EqualTo(96d).Within(0.001d));
+            Assert.That(clock.PlaybackSpeed, Is.EqualTo(1f));
+
+            clock.ObserveSample(102u, 1.15d, tickDelta);
+            Assert.That(clock.TargetDelayTicks, Is.GreaterThan(5u));
+            double before = clock.Tick;
+            double after = clock.Advance(102u, tickDelta, tickDelta);
+            Assert.That(after - before, Is.EqualTo(NetworkPresentationClock.MinimumPlaybackSpeed).Within(0.001d));
+            Assert.That(clock.TargetDelayTicks, Is.InRange(NetworkPresentationClock.MinimumDelayTicks,
+                NetworkPresentationClock.MaximumDelayTicks));
+        }
+
+        [Test]
+        public void BoulderVisualPredictionIsBoundedAndDoesNotMovePhysicsRoot()
+        {
+            GameObject instance = Object.Instantiate(UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(
+                "Assets/PushUp/Prefabs/Boulder.prefab"));
+            try
+            {
+                Rigidbody body = instance.GetComponent<Rigidbody>();
+                BoulderVisualPredictor predictor = instance.GetComponent<BoulderVisualPredictor>();
+                Vector3 initialPosition = body.position;
+                predictor.AddImpulse(Vector3.forward * 400f, body.worldCenterOfMass + Vector3.up);
+                for (int index = 0; index < 120; index++)
+                    predictor.Simulate(1f / 120f);
+
+                Assert.That(predictor.PositionOffset.magnitude,
+                    Is.LessThanOrEqualTo(BoulderVisualPredictor.MaximumPositionOffset + 0.0001f));
+                Assert.That(predictor.RotationOffsetDegrees,
+                    Is.LessThanOrEqualTo(BoulderVisualPredictor.MaximumRotationOffsetDegrees + 0.0001f));
+                Assert.That(body.position, Is.EqualTo(initialPosition),
+                    "visual prediction must never move the authoritative or collision Rigidbody");
+            }
+            finally
+            {
+                Object.DestroyImmediate(instance);
+            }
         }
 
         [Test]
@@ -167,6 +216,7 @@ namespace PushUp.Tests
             });
 
             RemotePresentationBuffer buffer = new();
+            NetworkPresentationClock clock = new();
             int deliveryIndex = 0;
             float previousX = float.NegativeInfinity;
             float frameTicks = 60f / renderFps;
@@ -176,11 +226,15 @@ namespace PushUp.Tests
                 while (deliveryIndex < deliveries.Count &&
                        deliveries[deliveryIndex].ArrivalTick <= renderTick)
                 {
-                    buffer.Add(deliveries[deliveryIndex].Sample);
+                    ScheduledPose delivery = deliveries[deliveryIndex];
+                    if (buffer.Add(delivery.Sample))
+                        clock.ObserveSample(delivery.Sample.Tick, renderTick / 60d, 1f / 60f);
                     deliveryIndex++;
                 }
+                double playbackTick = clock.Advance(buffer.LatestTick, 1f / 60f,
+                    frameTicks / 60f);
                 if (renderTick < 16d || !buffer.TrySample(
-                        renderTick - RemotePresentationBuffer.PlaybackDelayTicks, 1f / 60f,
+                        playbackTick, 1f / 60f,
                         out Vector3 position, out Quaternion rotation, out _))
                     continue;
 
@@ -229,6 +283,7 @@ namespace PushUp.Tests
             });
 
             BoulderSnapshotBuffer buffer = new();
+            NetworkPresentationClock clock = new(BoulderSnapshotBuffer.PlaybackDelayTicks);
             int deliveryIndex = 0;
             float previousX = float.NegativeInfinity;
             float frameTicks = 60f / renderFps;
@@ -238,11 +293,15 @@ namespace PushUp.Tests
                 while (deliveryIndex < deliveries.Count &&
                        deliveries[deliveryIndex].ArrivalTick <= renderTick)
                 {
-                    buffer.Add(deliveries[deliveryIndex].Snapshot);
+                    ScheduledBoulder delivery = deliveries[deliveryIndex];
+                    if (buffer.Add(delivery.Snapshot))
+                        clock.ObserveSample(delivery.Snapshot.ServerTick, renderTick / 60d, 1f / 60f);
                     deliveryIndex++;
                 }
+                double playbackTick = clock.Advance(buffer.LatestTick, 1f / 60f,
+                    frameTicks / 60f);
                 if (renderTick < 16d || !buffer.TrySample(
-                        renderTick - BoulderSnapshotBuffer.PlaybackDelayTicks, 1f / 60f,
+                        playbackTick, 1f / 60f,
                         out BoulderSnapshot sampled, out _))
                     continue;
 

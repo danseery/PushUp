@@ -78,6 +78,9 @@ namespace PushUp.Gameplay
         public bool CrouchBoostAvailable;
         public bool Crouched;
         public bool Sliding;
+        public int SlideSprintGraceTicks;
+        public int SlideLevelTicks;
+        public bool SlideWasDownhill;
         public bool Grounded;
         public bool GroundedOnBoulder;
         public bool BoulderLandingArmed;
@@ -208,6 +211,9 @@ namespace PushUp.Gameplay
         public const float SlideSteerAcceleration = 5f;
         public const float SlideSlopeAcceleration = 32f;
         public const float SlideMaximumSpeed = 36f;
+        public const float SlideSprintGraceSeconds = 0.20f;
+        public const float SlideLevelDurationSeconds = 0.75f;
+        public const float SlideSlopeThresholdDegrees = 3f;
         public const float CoyoteSeconds = 0.12f;
         public const float JumpBufferSeconds = 0.12f;
         public const float MaxGroundAngle = 50f;
@@ -444,8 +450,14 @@ namespace PushUp.Gameplay
             Vector3 supportVelocity = state.Grounded ? state.Ground.PointVelocity : Vector3.zero;
             float groundedPlanarSpeed = Vector3.ProjectOnPlane(body.linearVelocity - supportVelocity,
                 state.GroundNormal).magnitude;
-            state.Sliding = UpdateSlideState(state.Sliding, state.Grounded, state.GroundedOnBoulder,
-                hasStance, input.CrouchHeld, input.CrouchPressed, input.Sprint, groundedPlanarSpeed);
+            Vector3 relativePlanarVelocity = Vector3.ProjectOnPlane(
+                body.linearVelocity - supportVelocity, state.GroundNormal);
+            ClassifySlideDirection(relativePlanarVelocity, state.GroundNormal,
+                out bool movingDownhill, out bool movingUphill);
+            state.Sliding = AdvanceSlideState(state.Sliding, state.Grounded, state.GroundedOnBoulder,
+                hasStance, input.CrouchHeld, input.CrouchPressed, input.Sprint, groundedPlanarSpeed,
+                movingDownhill, movingUphill, safeDelta, ref state.SlideSprintGraceTicks,
+                ref state.SlideLevelTicks, ref state.SlideWasDownhill);
             bool slideActive = state.Sliding && state.Grounded;
             Vector3 velocity = hasStance
                 ? CalculateBoulderStanceVelocity(body.linearVelocity, stance, input.Move, input.Sprint,
@@ -557,14 +569,81 @@ namespace PushUp.Gameplay
             return nextPlanar + supportVelocity - normal * GroundStickSpeed;
         }
 
-        public static bool UpdateSlideState(bool sliding, bool grounded, bool groundedOnBoulder,
-            bool inBoulderStance, bool crouchHeld, bool crouchPressed, bool sprinting, float planarSpeed)
+        public static bool AdvanceSlideState(bool sliding, bool grounded, bool groundedOnBoulder,
+            bool inBoulderStance, bool crouchHeld, bool crouchPressed, bool sprinting, float planarSpeed,
+            bool movingDownhill, bool movingUphill, float deltaTime, ref int sprintGraceTicks,
+            ref int levelSlideTicks, ref bool slideWasDownhill)
         {
+            float safeDelta = Mathf.Max(0.0001f, deltaTime);
+            int graceDuration = Mathf.Max(1, Mathf.CeilToInt(SlideSprintGraceSeconds / safeDelta));
+            if (sprinting)
+                sprintGraceTicks = graceDuration;
+            else if (sprintGraceTicks > 0)
+                sprintGraceTicks--;
+
             if (!crouchHeld || groundedOnBoulder || inBoulderStance)
+            {
+                levelSlideTicks = 0;
+                slideWasDownhill = false;
                 return false;
+            }
             if (sliding)
-                return !grounded || planarSpeed > SlideExitSpeed;
-            return grounded && crouchPressed && sprinting && planarSpeed >= SlideEntryMinimumSpeed;
+            {
+                if (!grounded)
+                    return true;
+                if (planarSpeed <= SlideExitSpeed || movingUphill ||
+                    (slideWasDownhill && !movingDownhill))
+                {
+                    levelSlideTicks = 0;
+                    slideWasDownhill = false;
+                    return false;
+                }
+                if (movingDownhill)
+                {
+                    slideWasDownhill = true;
+                    return true;
+                }
+
+                int maximumLevelTicks = Mathf.Max(1,
+                    Mathf.CeilToInt(SlideLevelDurationSeconds / safeDelta));
+                levelSlideTicks++;
+                if (levelSlideTicks >= maximumLevelTicks)
+                {
+                    levelSlideTicks = 0;
+                    return false;
+                }
+                return true;
+            }
+
+            bool hasSprintEntry = sprinting || sprintGraceTicks > 0;
+            bool enters = grounded && crouchPressed && hasSprintEntry && !movingUphill &&
+                          planarSpeed >= SlideEntryMinimumSpeed;
+            if (enters)
+            {
+                levelSlideTicks = 0;
+                slideWasDownhill = movingDownhill;
+            }
+            return enters;
+        }
+
+        public static void ClassifySlideDirection(Vector3 planarVelocity, Vector3 groundNormal,
+            out bool movingDownhill, out bool movingUphill)
+        {
+            movingDownhill = false;
+            movingUphill = false;
+            Vector3 normal = groundNormal.sqrMagnitude > 0.0001f
+                ? groundNormal.normalized
+                : Vector3.up;
+            float slope = Vector3.Angle(normal, Vector3.up);
+            if (slope < SlideSlopeThresholdDegrees || planarVelocity.sqrMagnitude < 0.01f)
+                return;
+
+            Vector3 downhill = Vector3.ProjectOnPlane(Vector3.down, normal);
+            if (downhill.sqrMagnitude < 0.0001f)
+                return;
+            float alignment = Vector3.Dot(planarVelocity.normalized, downhill.normalized);
+            movingDownhill = alignment > 0.05f;
+            movingUphill = alignment < -0.05f;
         }
 
         public static Vector3 CalculateSlideVelocity(Vector3 currentVelocity, Vector3 desiredDirection,

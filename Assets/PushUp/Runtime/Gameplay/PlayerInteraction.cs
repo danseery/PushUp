@@ -104,6 +104,7 @@ namespace PushUp.Gameplay
         private float _nextAimPromptSample;
         private bool _fighterAttackPresentationActive;
         private uint _nextLocalImpactSequence;
+        private BoulderNetworkState _predictedPunchBoulder;
 
         private struct OwnerGrabConstraint
         {
@@ -445,6 +446,13 @@ namespace PushUp.Gameplay
                         out Rigidbody targetRootBody, out Vector3 targetLocalHitPoint))
                     return;
                 targetBody = targetRootBody;
+                BoulderNetworkState predictedBoulder = targetBody.GetComponentInParent<BoulderNetworkState>();
+                if (predictedBoulder != null)
+                {
+                    float predictedImpulse = isGrabPunch ? GrabPunchImpulse : PunchImpulse;
+                    predictedBoulder.AddLocalVisualImpulse(direction.normalized * predictedImpulse, hitPoint);
+                    _predictedPunchBoulder = predictedBoulder;
+                }
                 _networkRelay.RequestPunch(
                     target,
                     targetLocalHitPoint,
@@ -492,12 +500,18 @@ namespace PushUp.Gameplay
 
         public void ShowValidatedInteractionStatus(bool push, bool comboFinisher = false)
         {
+            _predictedPunchBoulder = null;
             if (comboFinisher)
                 _nextPunchTime = Mathf.Max(_nextPunchTime, Time.time + PunchComboFinisherCooldown);
             SetStatus(push ? "PUSH" : comboFinisher ? "3 HIT COMBO" : "PUNCH HIT", 0.45f);
         }
 
-        public void ShowRejectedInteractionStatus() => SetStatus("BLOCKED", 0.3f);
+        public void ShowRejectedInteractionStatus()
+        {
+            _predictedPunchBoulder?.CancelLocalVisualPrediction();
+            _predictedPunchBoulder = null;
+            SetStatus("BLOCKED", 0.3f);
+        }
 
         public void ShowRejectedBoulderStance(BoulderStanceResultReason reason) =>
             SetStatus(reason switch

@@ -104,6 +104,7 @@ GameObject:
   - component: {fileID: 2605099768452272271}
   - component: {fileID: 6973373304182098477}
   - component: {fileID: 6526625010708539401}
+  - component: {fileID: 9134661272213001845}
   - component: {fileID: 6123456789012345678}
   m_Layer: 10
   m_Name: Boulder
@@ -186,7 +187,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 26b716c41e9b56b4baafaf13a523ba2e, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: FishNet.Runtime::FishNet.Object.NetworkObject
   _localLevelOfDetailCalculationType: 0
   _useLevelOfDetail: 0
@@ -267,6 +268,18 @@ MonoBehaviour:
   _networkObjectCache: {fileID: 2605099768452272271}
   _tickCallbacks: 6
   _presentationRoot: {fileID: 4603187507268800371}
+--- !u!114 &9134661272213001845
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 8982802104965608429}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9a2f2b0da17645db8dbf85b5ef1624c3, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: PushUp.Runtime::PushUp.Gameplay.BoulderVisualPredictor
 --- !u!114 &6123456789012345678
 MonoBehaviour:
   m_ObjectHideFlags: 0

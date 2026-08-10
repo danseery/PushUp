@@ -4,7 +4,7 @@ namespace PushUp.Core
     {
         public const uint DevelopmentSteamAppId = 480;
         public const int MaxPlayers = 4;
-        public const string ProtocolVersion = "pushup-1.3";
+        public const string ProtocolVersion = "pushup-1.4";
         public const string LobbyBuildKey = "build";
         public const string LobbyProtocolKey = "protocol";
         public const string LobbyHostKey = "host";

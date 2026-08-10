@@ -1,4 +1,5 @@
 using FishNet.Component.Transforming;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace PushUp.Gameplay
@@ -10,17 +11,23 @@ namespace PushUp.Gameplay
     [DefaultExecutionOrder(-100)]
     public sealed class RemotePlayerPresentation : MonoBehaviour
     {
+        private static readonly List<RemotePlayerPresentation> Instances = new(4);
         [SerializeField] private NetworkTransform _networkTransform;
         [SerializeField] private Transform _worldRoot;
 
         private readonly RemotePresentationBuffer _buffer = new();
-        private readonly RemotePresentationClock _clock = new();
+        private readonly NetworkPresentationClock _clock = new();
         private PlayerMotor _motor;
         private Vector3 _worldRootLocalPosition;
         private Quaternion _worldRootLocalRotation;
         private NetworkSmoothingDiagnosticsSnapshot _diagnostics;
+        private uint _sampledFrames;
 
         public NetworkSmoothingDiagnosticsSnapshot Diagnostics => _diagnostics;
+        public static IReadOnlyList<RemotePlayerPresentation> ActiveInstances => Instances;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetStatics() => Instances.Clear();
 
         private void Awake()
         {
@@ -36,12 +43,15 @@ namespace PushUp.Gameplay
 
         private void OnEnable()
         {
+            if (!Instances.Contains(this))
+                Instances.Add(this);
             if (_networkTransform != null)
                 _networkTransform.OnDataReceived += OnNetworkDataReceived;
         }
 
         private void OnDisable()
         {
+            Instances.Remove(this);
             if (_networkTransform != null)
                 _networkTransform.OnDataReceived -= OnNetworkDataReceived;
             ResetBuffer();
@@ -66,6 +76,8 @@ namespace PushUp.Gameplay
         {
             _buffer.Clear();
             _clock.Reset();
+            _sampledFrames = 0u;
+            _diagnostics = default;
             if (_worldRoot != null)
             {
                 _worldRoot.localPosition = _worldRootLocalPosition;
@@ -84,8 +96,15 @@ namespace PushUp.Gameplay
                 position = parent.TransformPoint(position);
                 rotation = parent.rotation * rotation;
             }
-            if (_buffer.Add(new RemotePoseSample(next.Tick, position, rotation)))
+            double arrivalTime = Time.unscaledTimeAsDouble;
+            float tickDelta = _motor != null && _motor.TimeManager != null
+                ? (float)_motor.TimeManager.TickDelta
+                : 1f / 60f;
+            if (_buffer.Add(new RemotePoseSample(next.Tick, position, rotation, arrivalTime)))
+            {
+                _clock.ObserveSample(next.Tick, arrivalTime, tickDelta);
                 _diagnostics.SamplesReceived++;
+            }
             else
                 _diagnostics.SamplesRejected++;
         }
@@ -111,15 +130,25 @@ namespace PushUp.Gameplay
                     out Quaternion rotation, out bool extrapolated))
             {
                 _diagnostics.BufferUnderruns++;
+                UpdateRates();
                 return;
             }
 
+            _sampledFrames++;
             if (extrapolated)
                 _diagnostics.ExtrapolatedFrames++;
             float positionError = Vector3.Distance(_worldRoot.position, position);
             float rotationError = Quaternion.Angle(_worldRoot.rotation, rotation);
             _diagnostics.LastPositionError = positionError;
             _diagnostics.LastRotationError = rotationError;
+            _diagnostics.BufferedTicks = _clock.BufferedTicks(_buffer.LatestTick);
+            _diagnostics.TargetBufferedTicks = _clock.TargetDelayTicks;
+            _diagnostics.ArrivalJitterMilliseconds = _clock.ArrivalJitterSeconds * 1000f;
+            _diagnostics.SnapshotAgeMilliseconds = _buffer.LatestArrivalTime > 0d
+                ? (float)((Time.unscaledTimeAsDouble - _buffer.LatestArrivalTime) * 1000d)
+                : 0f;
+            _diagnostics.PlaybackSpeed = _clock.PlaybackSpeed;
+            UpdateRates();
             if (positionError > 5f)
             {
                 _diagnostics.HardSnaps++;
@@ -127,6 +156,17 @@ namespace PushUp.Gameplay
                 return;
             }
             _worldRoot.SetPositionAndRotation(position, rotation);
+        }
+
+        private void UpdateRates()
+        {
+            uint total = _sampledFrames + _diagnostics.BufferUnderruns;
+            _diagnostics.UnderflowPercent = total > 0u
+                ? _diagnostics.BufferUnderruns * 100f / total
+                : 0f;
+            _diagnostics.ExtrapolationPercent = _sampledFrames > 0u
+                ? _diagnostics.ExtrapolatedFrames * 100f / _sampledFrames
+                : 0f;
         }
     }
 }

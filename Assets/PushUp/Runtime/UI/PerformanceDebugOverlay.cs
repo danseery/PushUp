@@ -1,4 +1,5 @@
 using System;
+using PushUp.Gameplay;
 using PushUp.Networking;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -97,7 +98,54 @@ namespace PushUp.UI
             NetworkDiagnosticsSnapshot diagnostics = _steamTransport != null
                 ? _steamTransport.Diagnostics
                 : default;
-            _label.text = $"PERFORMANCE  [F3]\nFPS  {fps}   {milliseconds:0.0} ms\nPING  {FormatPing(mode, diagnostics)}";
+            NetworkSmoothingDiagnosticsSnapshot playerSmoothing = GetWorstPlayerSmoothing();
+            NetworkSmoothingDiagnosticsSnapshot boulderSmoothing = GetBoulderSmoothing();
+            _label.text = $"PERFORMANCE  [F3]\nFPS  {fps}   {milliseconds:0.0} ms\n" +
+                          $"PING  {FormatPing(mode, diagnostics)}\n" +
+                          $"PLAYER BUF  {FormatSmoothing(playerSmoothing)}\n" +
+                          $"BOULDER BUF {FormatSmoothing(boulderSmoothing)}";
+        }
+
+        public static string FormatSmoothing(NetworkSmoothingDiagnosticsSnapshot value)
+        {
+            if (value.SamplesReceived == 0u)
+                return "--";
+            return $"{value.BufferedTicks:0.0}/{value.TargetBufferedTicks:0}t  " +
+                   $"JIT {value.ArrivalJitterMilliseconds:0.0}ms  " +
+                   $"UF {value.UnderflowPercent:0.0}%  X {value.ExtrapolationPercent:0.0}%";
+        }
+
+        private static NetworkSmoothingDiagnosticsSnapshot GetWorstPlayerSmoothing()
+        {
+            NetworkSmoothingDiagnosticsSnapshot worst = default;
+            float worstScore = -1f;
+            var instances = RemotePlayerPresentation.ActiveInstances;
+            for (int index = 0; index < instances.Count; index++)
+            {
+                RemotePlayerPresentation instance = instances[index];
+                if (instance == null)
+                    continue;
+                NetworkSmoothingDiagnosticsSnapshot candidate = instance.Diagnostics;
+                float score = candidate.UnderflowPercent + candidate.ExtrapolationPercent +
+                              candidate.ArrivalJitterMilliseconds * 0.1f;
+                if (candidate.SamplesReceived == 0u || score <= worstScore)
+                    continue;
+                worst = candidate;
+                worstScore = score;
+            }
+            return worst;
+        }
+
+        private static NetworkSmoothingDiagnosticsSnapshot GetBoulderSmoothing()
+        {
+            var instances = BoulderNetworkState.ActiveInstances;
+            for (int index = 0; index < instances.Count; index++)
+            {
+                BoulderNetworkState instance = instances[index];
+                if (instance != null && instance.Diagnostics.SamplesReceived > 0u)
+                    return instance.Diagnostics;
+            }
+            return default;
         }
 
         private void BuildUi()
@@ -125,7 +173,7 @@ namespace PushUp.UI
             RectTransform panel = _root.GetComponent<RectTransform>();
             panel.anchorMin = panel.anchorMax = panel.pivot = Vector2.one;
             panel.anchoredPosition = new Vector2(-24f, -24f);
-            panel.sizeDelta = new Vector2(310f, 112f);
+            panel.sizeDelta = new Vector2(620f, 176f);
             _root.GetComponent<Image>().color = new Color(0.015f, 0.035f, 0.045f, 0.88f);
 
             GameObject labelObject = new("Performance Values", typeof(RectTransform), typeof(CanvasRenderer),

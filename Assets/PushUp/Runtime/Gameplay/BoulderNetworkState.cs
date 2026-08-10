@@ -1,6 +1,7 @@
 using FishNet.Object;
 using FishNet.Transporting;
 using FishNet.Utility.Template;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace PushUp.Gameplay
@@ -146,7 +147,8 @@ namespace PushUp.Gameplay
             BoulderSnapshot latest = _samples[_count - 1];
             double ticks = System.Math.Min(MaximumExtrapolationTicks,
                 System.Math.Max(0d, targetTick - latest.ServerTick));
-            float seconds = (float)ticks * Mathf.Max(0.0001f, tickDelta);
+            float seconds = RemotePresentationBuffer.DampedExtrapolationDuration((float)ticks,
+                Mathf.Max(0.0001f, tickDelta));
             sampled = latest;
             sampled.Position += Vector3.ClampMagnitude(latest.LinearVelocity,
                 RemotePresentationBuffer.MaximumLinearSpeed) * seconds;
@@ -177,6 +179,7 @@ namespace PushUp.Gameplay
     [RequireComponent(typeof(Rigidbody), typeof(BoulderController))]
     public sealed class BoulderNetworkState : TickNetworkBehaviour
     {
+        private static readonly List<BoulderNetworkState> Instances = new(2);
         private const uint SnapshotIntervalTicks = 2u;
         private const float RestLinearSpeed = 0.035f;
         private const float RestAngularSpeed = 0.06f;
@@ -184,8 +187,10 @@ namespace PushUp.Gameplay
         [SerializeField] private Transform _presentationRoot;
 
         private readonly BoulderSnapshotBuffer _buffer = new();
+        private readonly NetworkPresentationClock _clock = new(BoulderSnapshotBuffer.PlaybackDelayTicks);
         private Rigidbody _body;
         private BoulderController _controller;
+        private BoulderVisualPredictor _visualPredictor;
         private uint _sequence;
         private uint _teleportGeneration;
         private uint _lastSnapshotTick;
@@ -199,18 +204,33 @@ namespace PushUp.Gameplay
         private Quaternion _currentProxyRotation;
         private float _lastProxyRealtime;
         private NetworkSmoothingDiagnosticsSnapshot _diagnostics;
+        private double _latestSnapshotArrivalTime;
+        private uint _sampledFrames;
 
         public Transform PresentationRoot => _presentationRoot != null ? _presentationRoot : transform;
         public NetworkSmoothingDiagnosticsSnapshot Diagnostics => _diagnostics;
+        public static IReadOnlyList<BoulderNetworkState> ActiveInstances => Instances;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetStatics() => Instances.Clear();
 
         private void Awake()
         {
             _body = GetComponent<Rigidbody>();
             _controller = GetComponent<BoulderController>();
+            _visualPredictor = GetComponent<BoulderVisualPredictor>();
             _presentationRoot ??= transform.Find("Presentation");
             _previousProxyPosition = _currentProxyPosition = transform.position;
             _previousProxyRotation = _currentProxyRotation = transform.rotation;
         }
+
+        private void OnEnable()
+        {
+            if (!Instances.Contains(this))
+                Instances.Add(this);
+        }
+
+        private void OnDisable() => Instances.Remove(this);
 
         public void Configure(Transform presentationRoot) => _presentationRoot = presentationRoot;
 
@@ -226,6 +246,8 @@ namespace PushUp.Gameplay
         public override void OnStopNetwork()
         {
             _buffer.Clear();
+            _clock.Reset();
+            _visualPredictor?.ResetPrediction();
             _receivedInitialSnapshot = false;
             base.OnStopNetwork();
         }
@@ -261,13 +283,16 @@ namespace PushUp.Gameplay
             if (!IsClientStarted || TimeManager == null)
                 return;
 
-            double playbackTick = TimeManager.LocalTick - BoulderSnapshotBuffer.PlaybackDelayTicks;
+            double playbackTick = _clock.Advance(_buffer.LatestTick, (float)TimeManager.TickDelta,
+                (float)TimeManager.TickDelta);
             if (!_buffer.TrySample(playbackTick, (float)TimeManager.TickDelta, out BoulderSnapshot snapshot,
                     out bool extrapolated))
             {
                 _diagnostics.BufferUnderruns++;
+                UpdateDiagnosticRates();
                 return;
             }
+            _sampledFrames++;
             if (extrapolated)
                 _diagnostics.ExtrapolatedFrames++;
             _previousProxyPosition = _currentProxyPosition;
@@ -306,14 +331,29 @@ namespace PushUp.Gameplay
             float alpha = Mathf.Clamp01((Time.unscaledTime - _lastProxyRealtime) / Mathf.Max(0.0001f, tickDelta));
             Vector3 targetPosition = Vector3.Lerp(_previousProxyPosition, _currentProxyPosition, alpha);
             Quaternion targetRotation = Quaternion.Slerp(_previousProxyRotation, _currentProxyRotation, alpha);
+            _visualPredictor?.Simulate(Time.unscaledDeltaTime);
+            if (_visualPredictor != null)
+            {
+                targetPosition += _visualPredictor.PositionOffset;
+                targetRotation = _visualPredictor.RotationOffset * targetRotation;
+                _diagnostics.PredictionOffset = _visualPredictor.PredictionMagnitude;
+            }
             float positionError = Vector3.Distance(_presentationRoot.position, targetPosition);
             float rotationError = Quaternion.Angle(_presentationRoot.rotation, targetRotation);
             _diagnostics.LastPositionError = positionError;
             _diagnostics.LastRotationError = rotationError;
-            float catchUp = positionError > 0.15f || rotationError > 5f ? 0.72f : 0.45f;
-            _presentationRoot.SetPositionAndRotation(
-                Vector3.Lerp(_presentationRoot.position, targetPosition, catchUp),
-                Quaternion.Slerp(_presentationRoot.rotation, targetRotation, catchUp));
+            _diagnostics.LastCorrection = positionError;
+            _diagnostics.BufferedTicks = _clock.BufferedTicks(_buffer.LatestTick);
+            _diagnostics.TargetBufferedTicks = _clock.TargetDelayTicks;
+            _diagnostics.ArrivalJitterMilliseconds = _clock.ArrivalJitterSeconds * 1000f;
+            _diagnostics.SnapshotAgeMilliseconds = _latestSnapshotArrivalTime > 0d
+                ? (float)((Time.unscaledTimeAsDouble - _latestSnapshotArrivalTime) * 1000d)
+                : 0f;
+            _diagnostics.PlaybackSpeed = _clock.PlaybackSpeed;
+            UpdateDiagnosticRates();
+            // targetPosition already interpolates between fixed-tick proxy poses. Applying it directly avoids
+            // a second, frame-count-dependent filter while prediction offsets converge exponentially.
+            _presentationRoot.SetPositionAndRotation(targetPosition, targetRotation);
         }
 
         private BoulderSnapshot CaptureSnapshot(uint tick) => new(tick, ++_sequence, _teleportGeneration,
@@ -353,6 +393,8 @@ namespace PushUp.Gameplay
             if (teleport)
             {
                 _buffer.Clear();
+                _clock.Reset();
+                _visualPredictor?.ResetPrediction();
                 _body.position = snapshot.Position;
                 _body.rotation = snapshot.Rotation;
                 _previousProxyPosition = _currentProxyPosition = snapshot.Position;
@@ -363,11 +405,33 @@ namespace PushUp.Gameplay
             }
             if (_buffer.Add(snapshot))
             {
+                _latestSnapshotArrivalTime = Time.unscaledTimeAsDouble;
+                float tickDelta = TimeManager != null ? (float)TimeManager.TickDelta : 1f / 60f;
+                _clock.ObserveSample(snapshot.ServerTick, _latestSnapshotArrivalTime, tickDelta);
                 _diagnostics.SamplesReceived++;
                 _receivedInitialSnapshot = true;
             }
             else if (!keyframe)
                 _diagnostics.SamplesRejected++;
+        }
+
+        public void SetLocalVisualForce(Vector3 force, Vector3 torque) =>
+            _visualPredictor?.SetContinuousForce(force, torque);
+
+        public void AddLocalVisualImpulse(Vector3 impulse, Vector3 worldPoint) =>
+            _visualPredictor?.AddImpulse(impulse, worldPoint);
+
+        public void CancelLocalVisualPrediction() => _visualPredictor?.CancelTransientPrediction();
+
+        private void UpdateDiagnosticRates()
+        {
+            uint total = _sampledFrames + _diagnostics.BufferUnderruns;
+            _diagnostics.UnderflowPercent = total > 0u
+                ? _diagnostics.BufferUnderruns * 100f / total
+                : 0f;
+            _diagnostics.ExtrapolationPercent = _sampledFrames > 0u
+                ? _diagnostics.ExtrapolatedFrames * 100f / _sampledFrames
+                : 0f;
         }
     }
 }

@@ -47,12 +47,30 @@ namespace PushUp.Tests
         }
 
         [Test]
+        public void OfflineBoulderUsesTheNetworkBoulderPresentationMaterial()
+        {
+            GameObject networkPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                "Assets/PushUp/Prefabs/Boulder.prefab");
+            GameObject offlinePrefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                "Assets/PushUp/Prefabs/Offline/Boulder.prefab");
+
+            Assert.That(networkPrefab, Is.Not.Null);
+            Assert.That(offlinePrefab, Is.Not.Null);
+            Material networkMaterial = networkPrefab.GetComponentInChildren<Renderer>(true).sharedMaterial;
+            Material offlineMaterial = offlinePrefab.GetComponentInChildren<Renderer>(true).sharedMaterial;
+            Assert.That(networkMaterial, Is.Not.Null);
+            Assert.That(offlineMaterial, Is.SameAs(networkMaterial),
+                "offline and Steam runs must render the same prefab-authored boulder material");
+        }
+
+        [Test]
         public void BoulderReplicationIsServerAuthoritative()
         {
             GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/PushUp/Prefabs/Boulder.prefab");
             Assert.That(prefab.GetComponent("NetworkTransform"), Is.Null,
                 "the boulder uses the fixed-tick project-owned snapshot path, not render-clock NetworkTransform");
             Assert.That(prefab.GetComponent<BoulderNetworkState>(), Is.Not.Null);
+            Assert.That(prefab.GetComponent<BoulderVisualPredictor>(), Is.Not.Null);
             Assert.That(prefab.transform.Find("Presentation"), Is.Not.Null);
             Rigidbody body = prefab.GetComponent<Rigidbody>();
             Assert.That(body.mass, Is.EqualTo(150f));
@@ -88,6 +106,8 @@ namespace PushUp.Tests
             Assert.That(transformSettings.FindProperty("_componentConfiguration").intValue, Is.EqualTo(2),
                 "only the owner may keep the player Rigidbody dynamic");
             Assert.That(transformSettings.FindProperty("_interval").intValue, Is.EqualTo(1));
+            Assert.That(transformSettings.FindProperty("_interpolation").intValue, Is.Zero,
+                "the hidden query proxy must not add a second visible interpolation layer");
             Assert.That(transformSettings.FindProperty("_synchronizeScale").boolValue, Is.False);
             Assert.That(network.FindProperty("_networkTransform").objectReferenceValue, Is.EqualTo(networkTransform));
             Assert.That(prefab.GetComponent<RemotePlayerPresentation>(), Is.Not.Null);
@@ -263,7 +283,9 @@ namespace PushUp.Tests
             SerializedObject settings = new(networkTransform);
             Assert.That(settings.FindProperty("_componentConfiguration").intValue, Is.EqualTo(2));
             Assert.That(settings.FindProperty("_interval").intValue, Is.EqualTo(3));
+            Assert.That(settings.FindProperty("_interpolation").intValue, Is.Zero);
             Assert.That(settings.FindProperty("_synchronizeScale").boolValue, Is.False);
+            Assert.That(prefab.GetComponent<RemoteActorPresentation>(), Is.Not.Null);
             Assert.That(PlayerInteraction.IsLocalOnlyBody(prefab.GetComponent<Rigidbody>()), Is.False);
 
             Object registry = AssetDatabase.LoadMainAssetAtPath("Assets/DefaultPrefabObjects.asset");
@@ -310,7 +332,9 @@ namespace PushUp.Tests
             SerializedObject networkTransform = new(prefab.GetComponent("NetworkTransform"));
             Assert.That(networkTransform.FindProperty("_componentConfiguration").intValue, Is.EqualTo(2));
             Assert.That(networkTransform.FindProperty("_interval").intValue, Is.EqualTo(3));
+            Assert.That(networkTransform.FindProperty("_interpolation").intValue, Is.Zero);
             Assert.That(networkTransform.FindProperty("_synchronizeScale").boolValue, Is.False);
+            Assert.That(prefab.GetComponent<RemoteActorPresentation>(), Is.Not.Null);
             Assert.That(PlayerInteraction.IsLocalOnlyBody(prefab.GetComponent<Rigidbody>()), Is.False,
                 "the replicated fighter also has TrainingDummy behavior but must still use server RPCs");
             foreach (Renderer renderer in prefab.GetComponentsInChildren<Renderer>(true))
@@ -467,6 +491,13 @@ namespace PushUp.Tests
                     Assert.That(secondState.CoyoteTicks, Is.EqualTo(firstState.CoyoteTicks), $"coyote at tick {tick}");
                     Assert.That(secondState.BufferTicks, Is.EqualTo(firstState.BufferTicks), $"buffer at tick {tick}");
                     Assert.That(secondState.Crouched, Is.EqualTo(firstState.Crouched), $"crouch at tick {tick}");
+                    Assert.That(secondState.Sliding, Is.EqualTo(firstState.Sliding), $"slide at tick {tick}");
+                    Assert.That(secondState.SlideSprintGraceTicks,
+                        Is.EqualTo(firstState.SlideSprintGraceTicks), $"slide grace at tick {tick}");
+                    Assert.That(secondState.SlideLevelTicks, Is.EqualTo(firstState.SlideLevelTicks),
+                        $"slide duration at tick {tick}");
+                    Assert.That(secondState.SlideWasDownhill, Is.EqualTo(firstState.SlideWasDownhill),
+                        $"downhill slide state at tick {tick}");
                     Assert.That(secondState.Grounded, Is.EqualTo(firstState.Grounded), $"grounded at tick {tick}");
                     Assert.That(secondState.GroundedOnBoulder, Is.EqualTo(firstState.GroundedOnBoulder));
                     Assert.That(secondState.BoulderLandingArmed, Is.EqualTo(firstState.BoulderLandingArmed));
@@ -1042,6 +1073,7 @@ namespace PushUp.Tests
         [Test]
         public void SprintCrouchAndCrouchJumpBoostUseApprovedMovementTuning()
         {
+            const float fixedStep = 1f / 60f;
             Assert.That(PlayerPhysics.CurrentMovementSpeed(1f, false, false, true), Is.EqualTo(10f));
             Assert.That(PlayerPhysics.CurrentMovementSpeed(1f, true, false, true), Is.EqualTo(15f));
             Assert.That(PlayerPhysics.CurrentMovementSpeed(1f, true, true, true), Is.EqualTo(3.3f));
@@ -1050,14 +1082,22 @@ namespace PushUp.Tests
             Assert.That(PlayerPhysics.CurrentMovementSpeed(1f, true, true, false), Is.EqualTo(15f),
                 "air crouch must preserve sprint movement speed");
 
-            Assert.That(PlayerPhysics.UpdateSlideState(false, true, false, false, true, true, true,
-                PlayerPhysics.SprintSpeed), Is.True, "sprint-speed crouch press starts a slide");
-            Assert.That(PlayerPhysics.UpdateSlideState(false, true, false, false, true, true, false,
-                PlayerPhysics.SprintSpeed), Is.False, "walking crouch must not start a slide");
-            Assert.That(PlayerPhysics.UpdateSlideState(true, false, false, false, true, false, false,
-                PlayerPhysics.SprintSpeed), Is.True, "a held slide survives a jump");
+            int graceTicks = 0;
+            int levelTicks = 0;
+            bool wasDownhill = false;
+            Assert.That(PlayerPhysics.AdvanceSlideState(false, true, false, false, true, true, true,
+                PlayerPhysics.SprintSpeed, false, false, fixedStep, ref graceTicks, ref levelTicks,
+                ref wasDownhill), Is.True, "sprint-speed crouch press starts a slide");
+            graceTicks = 0;
+            levelTicks = 0;
+            wasDownhill = false;
+            Assert.That(PlayerPhysics.AdvanceSlideState(false, true, false, false, true, true, false,
+                PlayerPhysics.SprintSpeed, false, false, fixedStep, ref graceTicks, ref levelTicks,
+                ref wasDownhill), Is.False, "walking crouch must not start a slide");
+            Assert.That(PlayerPhysics.AdvanceSlideState(true, false, false, false, true, false, false,
+                PlayerPhysics.SprintSpeed, false, false, fixedStep, ref graceTicks, ref levelTicks,
+                ref wasDownhill), Is.True, "a held slide survives a jump");
 
-            const float fixedStep = 1f / 60f;
             Vector3 levelSlide = PlayerPhysics.CalculateSlideVelocity(Vector3.forward * PlayerPhysics.SprintSpeed,
                 Vector3.forward, Vector3.up, Vector3.zero, true, 1f, fixedStep);
             Vector3 downhillNormal = Quaternion.AngleAxis(25f, Vector3.right) * Vector3.up;
@@ -1086,6 +1126,63 @@ namespace PushUp.Tests
             Assert.That(available, Is.True);
             Assert.That(PlayerPhysics.AdvanceCrouchBoost(false, false, true, step, ref ticks, ref available), Is.True);
             Assert.That(PlayerPhysics.AdvanceCrouchBoost(false, false, true, step, ref ticks, ref available), Is.False, "one jump permits only one boost");
+        }
+
+        [Test]
+        public void SlideAllowsSprintReleaseGraceAndStopsAtLevelOrUphillLimits()
+        {
+            const float fixedStep = 1f / 60f;
+            int graceTicks = 0;
+            int levelTicks = 0;
+            bool wasDownhill = false;
+
+            PlayerPhysics.AdvanceSlideState(false, true, false, false, false, false, true,
+                PlayerPhysics.SprintSpeed, false, false, fixedStep, ref graceTicks, ref levelTicks,
+                ref wasDownhill);
+            for (int tick = 0; tick < 5; tick++)
+                PlayerPhysics.AdvanceSlideState(false, true, false, false, false, false, false,
+                    PlayerPhysics.SprintSpeed, false, false, fixedStep, ref graceTicks, ref levelTicks,
+                    ref wasDownhill);
+            Assert.That(PlayerPhysics.AdvanceSlideState(false, true, false, false, true, true, false,
+                PlayerPhysics.SprintSpeed, false, false, fixedStep, ref graceTicks, ref levelTicks,
+                ref wasDownhill), Is.True, "crouch may follow sprint release within the grace window");
+
+            for (int tick = 0; tick < 44; tick++)
+                Assert.That(PlayerPhysics.AdvanceSlideState(true, true, false, false, true, false, false,
+                    PlayerPhysics.SprintSpeed, false, false, fixedStep, ref graceTicks, ref levelTicks,
+                    ref wasDownhill), Is.True);
+            Assert.That(PlayerPhysics.AdvanceSlideState(true, true, false, false, true, false, false,
+                PlayerPhysics.SprintSpeed, false, false, fixedStep, ref graceTicks, ref levelTicks,
+                ref wasDownhill), Is.False, "level-ground sliding ends after 0.75 seconds");
+
+            Vector3 slopeNormal = Quaternion.AngleAxis(20f, Vector3.right) * Vector3.up;
+            Vector3 downhill = Vector3.ProjectOnPlane(Vector3.down, slopeNormal).normalized;
+            PlayerPhysics.ClassifySlideDirection(downhill * PlayerPhysics.SprintSpeed, slopeNormal,
+                out bool movingDownhill, out bool movingUphill);
+            Assert.That(movingDownhill, Is.True);
+            Assert.That(movingUphill, Is.False);
+
+            graceTicks = 0;
+            levelTicks = 0;
+            wasDownhill = false;
+            bool sliding = PlayerPhysics.AdvanceSlideState(false, true, false, false, true, true, true,
+                PlayerPhysics.SprintSpeed, true, false, fixedStep, ref graceTicks, ref levelTicks,
+                ref wasDownhill);
+            for (int tick = 0; tick < 180; tick++)
+                sliding = PlayerPhysics.AdvanceSlideState(sliding, true, false, false, true, false, false,
+                    PlayerPhysics.SprintSpeed, true, false, fixedStep, ref graceTicks, ref levelTicks,
+                    ref wasDownhill);
+            Assert.That(sliding, Is.True, "a downhill ski is not limited by the level-ground timer");
+            Assert.That(PlayerPhysics.AdvanceSlideState(sliding, true, false, false, true, false, false,
+                PlayerPhysics.SprintSpeed, false, false, fixedStep, ref graceTicks, ref levelTicks,
+                ref wasDownhill), Is.False, "a downhill ski ends as soon as it reaches level ground");
+
+            graceTicks = 0;
+            levelTicks = 0;
+            wasDownhill = false;
+            Assert.That(PlayerPhysics.AdvanceSlideState(false, true, false, false, true, true, true,
+                PlayerPhysics.SprintSpeed, false, true, fixedStep, ref graceTicks, ref levelTicks,
+                ref wasDownhill), Is.False, "a slide cannot begin while moving uphill");
         }
 
         [Test]

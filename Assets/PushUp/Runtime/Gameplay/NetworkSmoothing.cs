@@ -7,12 +7,14 @@ namespace PushUp.Gameplay
         public readonly uint Tick;
         public readonly Vector3 Position;
         public readonly Quaternion Rotation;
+        public readonly double ArrivalTime;
 
-        public RemotePoseSample(uint tick, Vector3 position, Quaternion rotation)
+        public RemotePoseSample(uint tick, Vector3 position, Quaternion rotation, double arrivalTime = 0d)
         {
             Tick = tick;
             Position = position;
             Rotation = NetworkQuaternion.NormalizeOrIdentity(rotation);
+            ArrivalTime = arrivalTime;
         }
     }
 
@@ -25,6 +27,15 @@ namespace PushUp.Gameplay
         public uint HardSnaps;
         public float LastPositionError;
         public float LastRotationError;
+        public float BufferedTicks;
+        public float TargetBufferedTicks;
+        public float ArrivalJitterMilliseconds;
+        public float SnapshotAgeMilliseconds;
+        public float PlaybackSpeed;
+        public float PredictionOffset;
+        public float LastCorrection;
+        public float UnderflowPercent;
+        public float ExtrapolationPercent;
     }
 
     public static class NetworkQuaternion
@@ -59,7 +70,7 @@ namespace PushUp.Gameplay
     public sealed class RemotePresentationBuffer
     {
         public const int Capacity = 16;
-        public const uint PlaybackDelayTicks = 4;
+        public const uint PlaybackDelayTicks = 5;
         public const uint MaximumExtrapolationTicks = 6;
         public const float MaximumLinearSpeed = 22f;
         public const float MaximumAngularSpeed = 720f;
@@ -68,15 +79,20 @@ namespace PushUp.Gameplay
         private int _count;
         private bool _hasPlaybackCursor;
         private double _playbackCursor;
+        private bool _hasRenderedPosition;
+        private Vector3 _lastRenderedPosition;
 
         public int Count => _count;
         public uint LatestTick => _count > 0 ? _samples[_count - 1].Tick : 0u;
+        public double LatestArrivalTime => _count > 0 ? _samples[_count - 1].ArrivalTime : 0d;
 
         public void Clear()
         {
             _count = 0;
             _hasPlaybackCursor = false;
             _playbackCursor = 0d;
+            _hasRenderedPosition = false;
+            _lastRenderedPosition = default;
         }
 
         public bool Add(RemotePoseSample sample)
@@ -127,7 +143,7 @@ namespace PushUp.Gameplay
             _playbackCursor = targetTick;
             if (_count == 1 || targetTick <= _samples[0].Tick)
             {
-                position = _samples[0].Position;
+                position = PreserveAuthoritativeDirection(_samples[0].Position, Vector3.zero);
                 rotation = _samples[0].Rotation;
                 return true;
             }
@@ -143,8 +159,11 @@ namespace PushUp.Gameplay
                 Vector3 previousVelocity = SampleVelocity(Mathf.Max(0, index - 2), index - 1, tickDelta);
                 Vector3 nextVelocity = SampleVelocity(index - 1, index, tickDelta);
                 float spanSeconds = (float)spanTicks * Mathf.Max(0.0001f, tickDelta);
-                position = Hermite(previous.Position, previousVelocity * spanSeconds,
+                Vector3 linear = Vector3.Lerp(previous.Position, next.Position, t);
+                Vector3 hermite = Hermite(previous.Position, previousVelocity * spanSeconds,
                     next.Position, nextVelocity * spanSeconds, t);
+                Vector3 candidate = Vector3.Distance(hermite, linear) <= 0.25f ? hermite : linear;
+                position = PreserveAuthoritativeDirection(candidate, next.Position - previous.Position);
                 rotation = Quaternion.Slerp(previous.Rotation, ShortestPath(previous.Rotation, next.Rotation), t);
                 return true;
             }
@@ -152,7 +171,7 @@ namespace PushUp.Gameplay
             RemotePoseSample latest = _samples[_count - 1];
             if (_count < 2)
             {
-                position = latest.Position;
+                position = PreserveAuthoritativeDirection(latest.Position, Vector3.zero);
                 rotation = latest.Rotation;
                 return true;
             }
@@ -160,11 +179,12 @@ namespace PushUp.Gameplay
             RemotePoseSample before = _samples[_count - 2];
             double requestedTicks = targetTick - latest.Tick;
             double extrapolationTicks = System.Math.Min(MaximumExtrapolationTicks, System.Math.Max(0d, requestedTicks));
-            float duration = (float)extrapolationTicks * Mathf.Max(0.0001f, tickDelta);
+            float duration = DampedExtrapolationDuration((float)extrapolationTicks,
+                Mathf.Max(0.0001f, tickDelta));
             float sampleSeconds = Mathf.Max(0.0001f, unchecked(latest.Tick - before.Tick) * tickDelta);
             Vector3 velocity = Vector3.ClampMagnitude((latest.Position - before.Position) / sampleSeconds,
                 MaximumLinearSpeed);
-            position = latest.Position + velocity * duration;
+            position = PreserveAuthoritativeDirection(latest.Position + velocity * duration, velocity);
             float angularSpeed = Mathf.Min(MaximumAngularSpeed,
                 Quaternion.Angle(before.Rotation, latest.Rotation) / sampleSeconds);
             Quaternion delta = latest.Rotation * Quaternion.Inverse(before.Rotation);
@@ -176,6 +196,16 @@ namespace PushUp.Gameplay
                     axis.normalized) * latest.Rotation;
             extrapolated = requestedTicks > 0d;
             return true;
+        }
+
+        private Vector3 PreserveAuthoritativeDirection(Vector3 candidate, Vector3 direction)
+        {
+            if (_hasRenderedPosition && direction.sqrMagnitude > 0.000001f &&
+                Vector3.Dot(candidate - _lastRenderedPosition, direction) < 0f)
+                candidate = _lastRenderedPosition;
+            _lastRenderedPosition = candidate;
+            _hasRenderedPosition = true;
+            return candidate;
         }
 
         private Vector3 SampleVelocity(int first, int second, float tickDelta)
@@ -199,6 +229,15 @@ namespace PushUp.Gameplay
 
         private static bool IsFinite(Vector3 value) =>
             float.IsFinite(value.x) && float.IsFinite(value.y) && float.IsFinite(value.z);
+
+        internal static float DampedExtrapolationDuration(float ticks, float tickDelta)
+        {
+            float fullSpeedTicks = Mathf.Min(3f, Mathf.Max(0f, ticks));
+            float dampingTicks = Mathf.Clamp(ticks - 3f, 0f, 3f);
+            // Velocity fades linearly from full speed to zero during ticks four through six.
+            float dampedContribution = dampingTicks - dampingTicks * dampingTicks / 6f;
+            return (fullSpeedTicks + dampedContribution) * tickDelta;
+        }
     }
 
     /// <summary>
@@ -206,17 +245,64 @@ namespace PushUp.Gameplay
     /// been running for thousands of ticks before a client joins, so its LocalTick must never be
     /// compared directly with the joining client's NetworkTransform sample ticks.
     /// </summary>
-    public sealed class RemotePresentationClock
+    public class NetworkPresentationClock
     {
+        public const uint MinimumDelayTicks = 4;
+        public const uint MaximumDelayTicks = 8;
+        public const float MinimumPlaybackSpeed = 0.9f;
+        public const float MaximumPlaybackSpeed = 1.1f;
+
+        private readonly uint _baseDelayTicks;
         private bool _initialized;
         private double _tick;
+        private uint _targetDelayTicks;
+        private bool _hasArrival;
+        private uint _lastSampleTick;
+        private double _lastArrivalTime;
+        private float _arrivalJitterSeconds;
+        private float _playbackSpeed = 1f;
 
         public double Tick => _tick;
+        public uint TargetDelayTicks => _targetDelayTicks;
+        public float ArrivalJitterSeconds => _arrivalJitterSeconds;
+        public float PlaybackSpeed => _playbackSpeed;
+        public float BufferedTicks(uint latestSampleTick) => (float)(latestSampleTick - _tick);
+
+        public NetworkPresentationClock(uint baseDelayTicks = RemotePresentationBuffer.PlaybackDelayTicks)
+        {
+            _baseDelayTicks = (uint)Mathf.Clamp((int)baseDelayTicks,
+                (int)MinimumDelayTicks, (int)MaximumDelayTicks);
+            _targetDelayTicks = _baseDelayTicks;
+        }
 
         public void Reset()
         {
             _initialized = false;
             _tick = 0d;
+            _targetDelayTicks = _baseDelayTicks;
+            _hasArrival = false;
+            _lastSampleTick = 0u;
+            _lastArrivalTime = 0d;
+            _arrivalJitterSeconds = 0f;
+            _playbackSpeed = 1f;
+        }
+
+        public void ObserveSample(uint sampleTick, double arrivalTime, float tickDelta)
+        {
+            if (_hasArrival && NetworkQuaternion.IsNewer(sampleTick, _lastSampleTick))
+            {
+                uint tickSpan = unchecked(sampleTick - _lastSampleTick);
+                double expected = tickSpan * Mathf.Max(0.0001f, tickDelta);
+                float error = (float)System.Math.Abs((arrivalTime - _lastArrivalTime) - expected);
+                _arrivalJitterSeconds = Mathf.Lerp(_arrivalJitterSeconds, error, 0.12f);
+                int jitterTicks = Mathf.CeilToInt(_arrivalJitterSeconds /
+                                                  Mathf.Max(0.0001f, tickDelta) * 2f);
+                _targetDelayTicks = (uint)Mathf.Clamp((int)_baseDelayTicks + jitterTicks,
+                    (int)MinimumDelayTicks, (int)MaximumDelayTicks);
+            }
+            _hasArrival = true;
+            _lastSampleTick = sampleTick;
+            _lastArrivalTime = arrivalTime;
         }
 
         public double Advance(uint latestSampleTick, float tickDelta, float renderDelta)
@@ -224,18 +310,30 @@ namespace PushUp.Gameplay
             if (!_initialized)
             {
                 _tick = System.Math.Max(0d,
-                    latestSampleTick - (double)RemotePresentationBuffer.PlaybackDelayTicks);
+                    latestSampleTick - (double)_targetDelayTicks);
                 _initialized = true;
                 return _tick;
             }
 
             double tickSeconds = System.Math.Max(0.0001d, tickDelta);
-            _tick += System.Math.Max(0d, renderDelta) / tickSeconds;
+            double desiredTick = latestSampleTick - (double)_targetDelayTicks;
+            double nominalAdvance = System.Math.Max(0d, renderDelta) / tickSeconds;
+            double occupancyError = desiredTick - (_tick + nominalAdvance);
+            _playbackSpeed = occupancyError > 0.75d
+                ? MaximumPlaybackSpeed
+                : occupancyError < -0.75d ? MinimumPlaybackSpeed : 1f;
+            _tick += nominalAdvance * _playbackSpeed;
             double maximum = latestSampleTick + (double)RemotePresentationBuffer.MaximumExtrapolationTicks;
             if (_tick > maximum)
                 _tick = maximum;
             return _tick;
         }
+    }
+
+    // Compatibility alias for project code and older tests; new code should use NetworkPresentationClock.
+    public sealed class RemotePresentationClock : NetworkPresentationClock
+    {
+        public RemotePresentationClock() : base(RemotePresentationBuffer.PlaybackDelayTicks) { }
     }
 
 }

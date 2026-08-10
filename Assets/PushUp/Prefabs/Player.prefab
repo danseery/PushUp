@@ -1092,7 +1092,7 @@ MonoBehaviour:
     Rotation: 1
     Scale: 0
   _useScaledTime: 1
-  _interpolation: 1
+  _interpolation: 0
   _extrapolation: 2
   _enableTeleport: 0
   _teleportThreshold: 1

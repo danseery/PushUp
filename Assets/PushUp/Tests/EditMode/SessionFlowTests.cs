@@ -1,4 +1,5 @@
 using NUnit.Framework;
+using PushUp.Gameplay;
 using PushUp.Networking;
 using PushUp.UI;
 
@@ -189,6 +190,9 @@ namespace PushUp.Tests
                 Is.EqualTo("LOCAL"));
             Assert.That(PerformanceDebugOverlay.FormatPing(SessionMode.Steam, default), Is.EqualTo("WAIT"));
             Assert.That(PerformanceDebugOverlay.FormatPing(SessionMode.None, default), Is.EqualTo("--"));
+            NetworkSmoothingDiagnosticsSnapshot smoothing = new() { SamplesReceived = 10u, BufferedTicks = 5f,
+                TargetBufferedTicks = 5f, ArrivalJitterMilliseconds = 2f };
+            Assert.That(PerformanceDebugOverlay.FormatSmoothing(smoothing), Does.Contain("5.0/5t"));
         }
 
         [Test]
